@@ -1,0 +1,10 @@
+# Example domains — one domain per line
+# Edit this file or use the Generator tab to create your list
+example.com
+mysite.net
+techblog.io
+startup.ai
+webapp.co
+coolproject.org
+devtool.vn
+smartapp.de
