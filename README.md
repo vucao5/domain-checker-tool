@@ -22,6 +22,9 @@
 | 📋 **Export Results** | Save results to file or copy to clipboard |
 | ⚡ **Multi-threaded** | Configurable thread count (default: 20 threads) |
 | 🔄 **Sort & Filter** | Sort by name/status/year, filter by TLD |
+| 🌍 **Multi-language** | 7 languages: Tiếng Việt, English, 日本語, 한국어, 中文, Deutsch, Français |
+| 📦 **Standalone EXE** | Build as single-file Windows EXE — no Python needed |
+| ✂️ **Multi-select Copy** | Drag-select + right-click copy in Available domains list |
 
 ## 🖥️ Screenshots
 
@@ -47,7 +50,15 @@
 | `.sg` | SGNIC |
 | `.in` | Registry.IN |
 
-## 🚀 Installation / Cài đặt
+## 📦 Download EXE (Windows)
+
+For regular users who don't have Python installed:
+
+1. Go to the [Releases](../../releases) page
+2. Download `DomainTool.exe`
+3. Double-click to run — no installation needed!
+
+## 🚀 Installation / Cài đặt (for developers)
 
 ### Prerequisites / Yêu cầu
 - Python 3.8 or higher
@@ -65,6 +76,17 @@ pip install -r requirements.txt
 
 # Run the application
 python main.py
+```
+
+### Build EXE from source
+
+```bash
+# Install build dependencies
+pip install pyinstaller pillow
+
+# Build single-file EXE
+python build.py
+# → Output: dist/DomainTool.exe
 ```
 
 ## 📖 Usage / Hướng dẫn sử dụng
@@ -106,6 +128,9 @@ webapp.co
 ```
 domain-checker-tool/
 ├── main.py              # Main application (GUI + logic)
+├── lang.py              # Multi-language translations (7 languages)
+├── icon.py              # V-letter icon generator
+├── build.py             # PyInstaller build script → DomainTool.exe
 ├── domains.txt          # Input: list of domains to check
 ├── result.txt           # Output: check results (auto-generated)
 ├── requirements.txt     # Python dependencies

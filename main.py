@@ -14,6 +14,7 @@ For more info, see README.md
 """
 
 import os
+import locale
 import tkinter as tk
 from tkinter import messagebox, ttk, scrolledtext
 import requests
@@ -22,10 +23,57 @@ import threading
 import random
 import time as _time
 
+from lang import LANGUAGES, LANG_NAMES
+from icon import make_v_icon
+
 # Resolve paths relative to the script's directory
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DOMAINS_FILE = os.path.join(_SCRIPT_DIR, "domains.txt")
 _RESULT_FILE = os.path.join(_SCRIPT_DIR, "result.txt")
+
+# ==================== I18N ====================
+_current_lang = 'vi'
+_i18n_widgets = []          # [(widget, key, prop), ...]
+_i18n_callbacks = []        # [callable, ...]
+
+
+def _detect_lang():
+    """Auto-detect language from system locale."""
+    try:
+        loc = locale.getlocale()[0] or locale.getdefaultlocale()[0] or ''
+        code = loc[:2].lower()
+        if code in LANGUAGES:
+            return code
+    except Exception:
+        pass
+    return 'vi'
+
+
+_current_lang = _detect_lang()
+
+
+def T(key):
+    """Get translated string for current language."""
+    return LANGUAGES.get(_current_lang, LANGUAGES['en']).get(key, key)
+
+
+def _reg(widget, key, prop='text'):
+    """Register a widget for automatic language updates."""
+    _i18n_widgets.append((widget, key, prop))
+
+
+def _refresh_lang():
+    """Update all registered widgets and callbacks."""
+    for widget, key, prop in _i18n_widgets:
+        try:
+            widget.config(**{prop: T(key)})
+        except Exception:
+            pass
+    for cb in _i18n_callbacks:
+        try:
+            cb()
+        except Exception:
+            pass
 
 # ==================== THEME ====================
 BG       = "#eaf4fb"
@@ -149,11 +197,16 @@ TLD_OPTIONS = [
 THREADS = 20
 TIMEOUT = 15
 
-# RDAP status values that mean "registered but about to drop — may be re-registerable soon"
 _EXPIRING_STATUSES = {
     'pendingdelete', 'redemptionperiod', 'pendingretention',
     'autorenewperiod', 'transferperiod',
 }
+
+# Column internal IDs  →  translation keys
+_COL_IDS   = ('domain', 'status', 'year', 'error')
+_COL_KEYS  = {'domain': 'col_domain', 'status': 'col_status',
+              'year': 'col_year', 'error': 'col_error'}
+_COL_WIDTHS = {'domain': 260, 'status': 110, 'year': 75, 'error': 200}
 
 # ==================== LOGIC ====================
 def check_domain(domain):
@@ -175,7 +228,6 @@ def check_domain(domain):
                 data.get('registrationDate') or data.get('createdDate')
             )
             result['year'] = creation_date[:4] if creation_date else 'N/A'
-            # check if domain is in a dropping/expiring state
             rdap_statuses = {s.lower().replace(' ', '') for s in data.get('status', [])}
             if rdap_statuses & _EXPIRING_STATUSES:
                 matched = rdap_statuses & _EXPIRING_STATUSES
@@ -197,11 +249,19 @@ def check_domain(domain):
 
 # ==================== ROOT ====================
 root = tk.Tk()
-root.title("Domain Tool")
+root.title(T('app_title'))
 root.geometry("1380x760")
 root.resizable(True, True)
 root.configure(bg=BG)
 
+# --- Icon ---
+try:
+    _icons = make_v_icon()
+    root.iconphoto(True, *_icons)
+except Exception:
+    pass
+
+# --- Styles ---
 style = ttk.Style()
 style.theme_use('clam')
 style.configure("Treeview", background=ENTRY_BG, fieldbackground=ENTRY_BG,
@@ -215,6 +275,32 @@ style.configure("TNotebook.Tab", background=BG2, foreground=FG,
                 font=("Segoe UI", 10, "bold"), padding=[14, 6])
 style.map("TNotebook.Tab", background=[('selected', BG)], foreground=[('selected', '#1a5a8a')])
 
+# --- Language selector (top bar) ---
+lang_bar = tk.Frame(root, bg=BG)
+lang_bar.pack(fill=tk.X, padx=10, pady=(6, 0))
+
+_lang_label = tk.Label(lang_bar, text=T('lbl_lang'), font=("Segoe UI", 9), bg=BG, fg=FG2)
+_lang_label.pack(side=tk.RIGHT, padx=(0, 4))
+_reg(_lang_label, 'lbl_lang')
+
+_lang_var = tk.StringVar(value=LANG_NAMES.get(_current_lang, 'English'))
+_lang_combo = ttk.Combobox(lang_bar, textvariable=_lang_var,
+                            values=list(LANG_NAMES.values()),
+                            state='readonly', width=14, font=("Segoe UI", 9))
+_lang_combo.pack(side=tk.RIGHT, padx=(0, 2))
+
+def _on_lang_change(event=None):
+    global _current_lang
+    name = _lang_var.get()
+    for code, n in LANG_NAMES.items():
+        if n == name:
+            _current_lang = code
+            break
+    _refresh_lang()
+
+_lang_combo.bind('<<ComboboxSelected>>', _on_lang_change)
+
+# --- Notebook ---
 nb = ttk.Notebook(root)
 nb.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
@@ -222,13 +308,14 @@ nb.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 # TAB 1 — CHECKER
 # ============================================================
 tab_check = tk.Frame(nb, bg=BG)
-nb.add(tab_check, text="  Check Domain  ")
+nb.add(tab_check, text=T('tab_check'))
 
 domain_vars = {}
 
 # TLD filter
-tld_frame = _lf(tab_check, "Lọc theo TLD — tick để chọn/bỏ chọn cả nhóm")
+tld_frame = _lf(tab_check, T('tld_filter'))
 tld_frame.pack(fill=tk.X, padx=10, pady=(10, 2))
+_reg(tld_frame, 'tld_filter')
 
 SUPPORTED_TLDS = list(RDAP_ENDPOINTS.keys())
 tld_filter_vars = {}
@@ -256,21 +343,21 @@ def load_domains():
         with open(_DOMAINS_FILE, encoding="utf-8") as f:
             lines = [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]
     except FileNotFoundError:
-        messagebox.showerror("Lỗi", "Không tìm thấy domains.txt"); return
+        messagebox.showerror(T('msg_error'), T('msg_not_found')); return
     for row in tree.get_children():
         tree.delete(row)
     domain_vars.clear()
     for d in lines:
         var = tk.BooleanVar(value=True)
         domain_vars[d] = var
-        tree.insert('', tk.END, iid=d, values=('☑ ' + d, '', '', ''))
-    lbl_count.config(text=f"{len(lines)} domain")
+        tree.insert('', tk.END, iid=d, values=('\u2611 ' + d, '', '', ''))
+    lbl_count.config(text=T('lbl_domain_count').format(n=len(lines)))
 
 def _refresh_row(d):
     checked = domain_vars[d].get()
     vals = list(tree.item(d, 'values'))
-    name_part = vals[0][2:] if vals[0][:2] in ('☑ ', '☐ ') else vals[0]
-    vals[0] = ('☑ ' if checked else '☐ ') + name_part
+    name_part = vals[0][2:] if vals[0][:2] in ('\u2611 ', '\u2610 ') else vals[0]
+    vals[0] = ('\u2611 ' if checked else '\u2610 ') + name_part
     tree.item(d, values=vals)
 
 def select_all():
@@ -285,10 +372,14 @@ def toggle_row(event):
     domain_vars[item].set(not domain_vars[item].get())
     _refresh_row(item)
 
-_btn(top, "Load domains.txt", load_domains, "#3a8fc9").pack(side=tk.LEFT, padx=(0,6))
-_btn(top, "Chọn tất cả",     select_all,   "#5aabb0", small=True).pack(side=tk.LEFT, padx=(0,4))
-_btn(top, "Bỏ chọn tất cả",  deselect_all, "#7a9fb5", small=True).pack(side=tk.LEFT, padx=(0,12))
-tk.Label(top, text="Luồng:", font=("Segoe UI", 9), bg=BG, fg=FG).pack(side=tk.LEFT)
+w = _btn(top, T('btn_load'), load_domains, "#3a8fc9"); _reg(w, 'btn_load')
+w.pack(side=tk.LEFT, padx=(0, 6))
+w = _btn(top, T('btn_select_all'), select_all, "#5aabb0", small=True); _reg(w, 'btn_select_all')
+w.pack(side=tk.LEFT, padx=(0, 4))
+w = _btn(top, T('btn_deselect_all'), deselect_all, "#7a9fb5", small=True); _reg(w, 'btn_deselect_all')
+w.pack(side=tk.LEFT, padx=(0, 12))
+_lbl_threads = tk.Label(top, text=T('lbl_threads'), font=("Segoe UI", 9), bg=BG, fg=FG)
+_lbl_threads.pack(side=tk.LEFT); _reg(_lbl_threads, 'lbl_threads')
 thread_var = tk.StringVar(value=str(THREADS))
 tk.Entry(top, textvariable=thread_var, width=4, font=("Segoe UI", 9),
          bg=ENTRY_BG, fg=FG, relief=tk.FLAT,
@@ -303,10 +394,10 @@ body.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
 frame_tree = tk.Frame(body, bg=BG)
 frame_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-cols = ('Domain', 'Status', 'Năm tạo', 'Lỗi')
-tree = ttk.Treeview(frame_tree, columns=cols, show='headings', selectmode='none')
-for c, w in zip(cols, [260, 110, 75, 200]):
-    tree.heading(c, text=c); tree.column(c, width=w, anchor='w')
+tree = ttk.Treeview(frame_tree, columns=_COL_IDS, show='headings', selectmode='none')
+for c in _COL_IDS:
+    tree.heading(c, text=T(_COL_KEYS[c]))
+    tree.column(c, width=_COL_WIDTHS[c], anchor='w')
 
 tree.tag_configure('AVAILABLE',  foreground='#1a7a40', background='#e8f8ee')
 tree.tag_configure('REGISTERED', foreground='#8b1a1a', background='#fceaea')
@@ -321,24 +412,30 @@ tree.pack(fill=tk.BOTH, expand=True)
 tree.bind('<Button-1>', toggle_row)
 
 # ---- Sort by column ----
-_sort_state = {}  # col -> ascending bool
+_sort_state = {}
+
+def _update_col_headings():
+    """Update column heading text (with sort arrows) using current language."""
+    for c in _COL_IDS:
+        asc = _sort_state.get(c)
+        arrow = ''
+        if asc is True:   arrow = ' \u25b2'
+        elif asc is False: arrow = ' \u25bc'
+        tree.heading(c, text=T(_COL_KEYS[c]) + arrow, command=lambda _c=c: _sort_col(_c))
 
 def _sort_col(col):
     asc = not _sort_state.get(col, False)
+    _sort_state.clear()
     _sort_state[col] = asc
     rows = [(tree.set(k, col), k) for k in tree.get_children('')]
     rows.sort(key=lambda x: x[0], reverse=not asc)
     for i, (_, k) in enumerate(rows):
         tree.move(k, '', i)
-    # update heading arrow
-    for c in ('Domain', 'Status', 'Năm tạo', 'Lỗi'):
-        label = c + (' ▲' if c == col and asc else ' ▼' if c == col else '')
-        tree.heading(c, text=label, command=lambda _c=c: _sort_col(_c))
+    _update_col_headings()
 
-for c in ('Domain', 'Status', 'Năm tạo', 'Lỗi'):
-    tree.heading(c, text=c, command=lambda _c=c: _sort_col(_c))
+_update_col_headings()
 
-# ---- Right-click context menu ----
+# ---- Right-click context menu (Tree) ----
 _ctx_menu = tk.Menu(root, tearoff=0, bg=BG2, fg=FG, activebackground="#3a8fc9",
                     activeforeground=BTN_FG, font=("Segoe UI", 9))
 
@@ -346,21 +443,33 @@ def _ctx_copy_domain():
     item = tree.focus()
     if not item: return
     vals = tree.item(item, 'values')
-    domain_raw = vals[0].lstrip('☑☐ ') if vals else item
+    domain_raw = vals[0].lstrip('\u2611\u2610 ') if vals else item
     root.clipboard_clear(); root.clipboard_append(domain_raw)
 
+def _ctx_copy_checked():
+    checked = [tree.item(k, 'values')[0].lstrip('\u2611\u2610 ')
+               for k in tree.get_children()
+               if domain_vars.get(k, tk.BooleanVar(value=False)).get()]
+    if checked:
+        root.clipboard_clear(); root.clipboard_append('\n'.join(checked))
+
 def _ctx_copy_all_available():
-    available = [tree.item(k,'values')[0].lstrip('☑☐ ')
+    available = [tree.item(k,'values')[0].lstrip('\u2611\u2610 ')
                  for k in tree.get_children()
                  if tree.item(k,'values')[1] in ('AVAILABLE','EXPIRING')]
     root.clipboard_clear(); root.clipboard_append('\n'.join(available))
 
-_ctx_menu.add_command(label="Copy domain này",           command=_ctx_copy_domain)
-_ctx_menu.add_command(label="Copy tất cả Available",     command=_ctx_copy_all_available)
-_ctx_menu.add_separator()
-_ctx_menu.add_command(label="Sắp xếp theo Tên ▲",  command=lambda: _sort_col('Domain'))
-_ctx_menu.add_command(label="Sắp xếp theo Năm ▲",  command=lambda: _sort_col('Năm tạo'))
-_ctx_menu.add_command(label="Sắp xếp theo Status", command=lambda: _sort_col('Status'))
+def _rebuild_ctx_menu():
+    _ctx_menu.delete(0, tk.END)
+    _ctx_menu.add_command(label=T('ctx_copy_domain'),    command=_ctx_copy_domain)
+    _ctx_menu.add_command(label=T('ctx_copy_selected'),  command=_ctx_copy_checked)
+    _ctx_menu.add_command(label=T('ctx_copy_available'), command=_ctx_copy_all_available)
+    _ctx_menu.add_separator()
+    _ctx_menu.add_command(label=T('ctx_sort_name'),   command=lambda: _sort_col('domain'))
+    _ctx_menu.add_command(label=T('ctx_sort_year'),   command=lambda: _sort_col('year'))
+    _ctx_menu.add_command(label=T('ctx_sort_status'), command=lambda: _sort_col('status'))
+
+_rebuild_ctx_menu()
 
 def _show_ctx(event):
     item = tree.identify_row(event.y)
@@ -371,38 +480,80 @@ def _show_ctx(event):
 
 tree.bind('<Button-3>', _show_ctx)
 
-# Right panel
+# ---- Right panel ----
 frame_right = tk.Frame(body, width=290, bg=BGPANEL, relief=tk.GROOVE, bd=1)
 frame_right.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
 frame_right.pack_propagate(False)
 
-tk.Label(frame_right, text="Kết quả realtime", font=("Segoe UI", 10, "bold"),
-         bg=BGPANEL, fg=FG).pack(pady=(10, 4))
+_panel_title = tk.Label(frame_right, text=T('panel_title'), font=("Segoe UI", 10, "bold"),
+                        bg=BGPANEL, fg=FG)
+_panel_title.pack(pady=(10, 4)); _reg(_panel_title, 'panel_title')
 
 stat_frame = tk.Frame(frame_right, bg=BGPANEL)
 stat_frame.pack(fill=tk.X, padx=10, pady=4)
 
-lbl_avail = tk.Label(stat_frame, text="Available: 0",  font=("Segoe UI", 11, "bold"), fg="#1a7a40", bg=BGPANEL)
-lbl_reg   = tk.Label(stat_frame, text="Registered: 0", font=("Segoe UI", 11, "bold"), fg="#8b1a1a", bg=BGPANEL)
-lbl_err   = tk.Label(stat_frame, text="Error: 0",      font=("Segoe UI", 10),         fg="#7a4500", bg=BGPANEL)
-lbl_done  = tk.Label(stat_frame, text="Done: 0 / 0",   font=("Segoe UI", 10),         fg=FG,        bg=BGPANEL)
-lbl_speed = tk.Label(stat_frame, text="Speed: — /s",   font=("Segoe UI", 9),          fg=FG2,       bg=BGPANEL)
+lbl_avail = tk.Label(stat_frame, text=T('stat_available').format(n=0), font=("Segoe UI", 11, "bold"),
+                     fg="#1a7a40", bg=BGPANEL)
+lbl_reg   = tk.Label(stat_frame, text=T('stat_registered').format(n=0), font=("Segoe UI", 11, "bold"),
+                     fg="#8b1a1a", bg=BGPANEL)
+lbl_err   = tk.Label(stat_frame, text=T('stat_error').format(n=0), font=("Segoe UI", 10),
+                     fg="#7a4500", bg=BGPANEL)
+lbl_done  = tk.Label(stat_frame, text=T('stat_done').format(done=0, total=0), font=("Segoe UI", 10),
+                     fg=FG, bg=BGPANEL)
+lbl_speed = tk.Label(stat_frame, text=T('stat_speed_init'), font=("Segoe UI", 9),
+                     fg=FG2, bg=BGPANEL)
 for w in (lbl_done, lbl_speed, lbl_avail, lbl_reg, lbl_err):
     w.pack(anchor='w', pady=1)
 
 ttk.Separator(frame_right, orient='horizontal').pack(fill=tk.X, padx=8, pady=6)
-tk.Label(frame_right, text="Available domains:", font=("Segoe UI", 9, "bold"),
-         bg=BGPANEL, fg=FG).pack(anchor='w', padx=8)
+_avail_label = tk.Label(frame_right, text=T('panel_available'), font=("Segoe UI", 9, "bold"),
+                        bg=BGPANEL, fg=FG)
+_avail_label.pack(anchor='w', padx=8); _reg(_avail_label, 'panel_available')
 
+# Available listbox — EXTENDED select (drag, Shift+Click, Ctrl+Click)
 avail_box = tk.Listbox(frame_right, font=("Consolas", 9), fg="#1a7a40",
                        bg=ENTRY_BG, selectbackground="#c8dff0",
-                       selectmode=tk.SINGLE, activestyle='none', relief=tk.FLAT, bd=0, highlightthickness=0)
+                       selectmode=tk.EXTENDED, activestyle='none',
+                       relief=tk.FLAT, bd=0, highlightthickness=0)
 avail_sb = ttk.Scrollbar(frame_right, orient='vertical', command=avail_box.yview)
 avail_box.configure(yscrollcommand=avail_sb.set)
 avail_sb.pack(side=tk.RIGHT, fill=tk.Y, padx=(0,4))
 avail_box.pack(fill=tk.BOTH, expand=True, padx=(8,0), pady=(2,8))
 
-# Bottom
+# ---- Avail listbox context menu ----
+_avail_ctx = tk.Menu(root, tearoff=0, bg=BG2, fg=FG, activebackground="#3a8fc9",
+                     activeforeground=BTN_FG, font=("Segoe UI", 9))
+
+def _avail_copy_selected():
+    indices = avail_box.curselection()
+    if not indices: return
+    domains = [avail_box.get(i) for i in indices]
+    root.clipboard_clear(); root.clipboard_append('\n'.join(domains))
+
+def _avail_copy_all():
+    items = avail_box.get(0, tk.END)
+    if not items: return
+    root.clipboard_clear(); root.clipboard_append('\n'.join(items))
+
+def _avail_select_all():
+    avail_box.select_set(0, tk.END)
+
+def _rebuild_avail_ctx():
+    _avail_ctx.delete(0, tk.END)
+    _avail_ctx.add_command(label=T('avail_copy_sel'),   command=_avail_copy_selected)
+    _avail_ctx.add_command(label=T('avail_copy_all'),   command=_avail_copy_all)
+    _avail_ctx.add_separator()
+    _avail_ctx.add_command(label=T('avail_select_all'), command=_avail_select_all)
+
+_rebuild_avail_ctx()
+
+def _show_avail_ctx(event):
+    _avail_ctx.tk_popup(event.x_root, event.y_root)
+
+avail_box.bind('<Button-3>', _show_avail_ctx)
+avail_box.bind('<Control-a>', lambda e: _avail_select_all())
+
+# ---- Bottom ----
 bot = tk.Frame(tab_check, bg=BG, padx=10, pady=6)
 bot.pack(fill=tk.X)
 
@@ -421,7 +572,7 @@ _stats = {'avail': 0, 'reg': 0, 'err': 0, 'done': 0, 'total': 0, 'start': 0.0}
 def start_check():
     selected = [d for d, var in domain_vars.items() if var.get()]
     if not selected:
-        messagebox.showwarning("Trống", "Chọn ít nhất 1 domain để check"); return
+        messagebox.showwarning(T('msg_warning'), T('msg_select_check')); return
     btn_check.config(state=tk.DISABLED)
     btn_save_r.config(state=tk.DISABLED)
     progress_var.set(0)
@@ -444,11 +595,14 @@ def _run_check(domains, n):
 def _refresh_stats():
     elapsed = _time.time() - _stats['start'] if _stats['start'] else 0
     speed = _stats['done'] / elapsed if elapsed > 0 else 0
-    lbl_avail.config(text=f"Available: {_stats['avail']}")
-    lbl_reg.config(text=f"Registered: {_stats['reg']}")
-    lbl_err.config(text=f"Error: {_stats['err']}")
-    lbl_done.config(text=f"Done: {_stats['done']} / {_stats['total']}")
-    lbl_speed.config(text=f"Speed: {speed:.1f} /s")
+    lbl_avail.config(text=T('stat_available').format(n=_stats['avail']))
+    lbl_reg.config(text=T('stat_registered').format(n=_stats['reg']))
+    lbl_err.config(text=T('stat_error').format(n=_stats['err']))
+    lbl_done.config(text=T('stat_done').format(done=_stats['done'], total=_stats['total']))
+    if _stats['start']:
+        lbl_speed.config(text=T('stat_speed').format(s=f"{speed:.1f}"))
+    else:
+        lbl_speed.config(text=T('stat_speed_init'))
 
 def _update_row(res):
     d = res['domain']; status = res['status']
@@ -457,39 +611,41 @@ def _update_row(res):
     elif status == 'REGISTERED': _stats['reg'] += 1
     elif status == 'ERROR':      _stats['err'] += 1
     checked = domain_vars.get(d, tk.BooleanVar(value=True)).get()
-    tree.item(d, values=(('☑ ' if checked else '☐ ') + d, status, res['year'], res['error']),
+    tree.item(d, values=(('\u2611 ' if checked else '\u2610 ') + d, status, res['year'], res['error']),
               tags=(status,))
     progress_var.set(_stats['done'] / _stats['total'] * 100)
-    lbl_status.config(text=f"[{_stats['done']}/{_stats['total']}] {d} → {status}")
+    lbl_status.config(text=T('status_checking').format(
+        done=_stats['done'], total=_stats['total'], domain=d, status=status))
     _refresh_stats()
 
 def _on_done(results):
-    lbl_status.config(text=f"Xong!  Available: {_stats['avail']}   Registered: {_stats['reg']}   Error: {_stats['err']}")
+    lbl_status.config(text=T('status_complete').format(
+        a=_stats['avail'], r=_stats['reg'], e=_stats['err']))
     btn_check.config(state=tk.NORMAL); btn_save_r.config(state=tk.NORMAL)
     root.check_results = results
 
 def save_results():
     results = getattr(root, 'check_results', [])
     if not results:
-        messagebox.showwarning("Trống", "Chưa có kết quả"); return
+        messagebox.showwarning(T('msg_empty'), T('msg_no_results')); return
     with open(_RESULT_FILE, "w", encoding="utf-8") as f:
         f.write("Domain\tStatus\tYear\tError\n" + "-" * 60 + "\n")
         for r in sorted(results, key=lambda x: (x['status'], x['domain'])):
             f.write(f"{r['domain']}\t{r['status']}\t{r['year']}\t{r['error']}\n")
-    messagebox.showinfo("Đã lưu", f"Lưu vào {_RESULT_FILE} thành công")
+    messagebox.showinfo(T('msg_saved'), T('msg_save_ok').format(path=_RESULT_FILE))
 
-btn_check  = _btn(btn_row, "Check Domain",   start_check,  "#3aab7a")
+btn_check  = _btn(btn_row, T('btn_check'), start_check, "#3aab7a"); _reg(btn_check, 'btn_check')
 btn_check.pack(side=tk.LEFT, padx=(0, 6))
-btn_save_r = _btn(btn_row, "Lưu result.txt", save_results, "#7a9fb5")
+btn_save_r = _btn(btn_row, T('btn_save_result'), save_results, "#7a9fb5"); _reg(btn_save_r, 'btn_save_result')
 btn_save_r.pack(side=tk.LEFT)
 
 # ============================================================
 # TAB 2 — GENERATOR
 # ============================================================
 tab_gen = tk.Frame(nb, bg=BG)
-nb.add(tab_gen, text="  Tạo Domain  ")
+nb.add(tab_gen, text=T('tab_gen'))
 
-# --- helpers scoped to tab_gen ---
+# --- helpers ---
 def _get_suffix_numbers():
     if not g_num_enable.get(): return ['']
     try:
@@ -510,7 +666,7 @@ def _get_names():
         sel_t = [t for t, v in g_topic_vars.items() if v.get()]
 
         if not sel_c and not sel_t:
-            messagebox.showwarning("Thiếu", "Chọn ít nhất 1 quốc gia / chủ đề hoặc nhập tên")
+            messagebox.showwarning(T('msg_missing'), T('msg_missing_name'))
             return []
 
         count = int(g_rand_count.get()) if g_rand_count.get().isdigit() else 30
@@ -520,7 +676,6 @@ def _get_names():
         topic_words   = [n for t in sel_t for n in TOPICS[t]]
 
         if sel_c and sel_t:
-            # kết hợp: tên quốc gia + từ chủ đề ghép liền
             pairs = [(cn, tw) for cn in country_names for tw in topic_words]
             sample = random.sample(pairs, min(count, len(pairs)))
             for cn, tw in sample:
@@ -546,21 +701,21 @@ def on_generate():
     if not names: return
     tlds = _get_tlds()
     if not tlds:
-        messagebox.showwarning("Thiếu TLD", "Nhập TLD hoặc chọn ít nhất 1"); return
+        messagebox.showwarning(T('msg_missing'), T('msg_missing_tld')); return
     domains = sorted({f"{n}{t}" for n in names for t in tlds})
     g_output.config(state=tk.NORMAL)
     g_output.delete("1.0", tk.END)
     g_output.insert(tk.END, "\n".join(domains))
     g_output.config(state=tk.DISABLED)
-    g_count_lbl.config(text=f"Tổng: {len(domains)} domain")
+    g_count_lbl.config(text=T('gen_total').format(n=len(domains)))
 
 def on_save_gen():
     content = g_output.get("1.0", tk.END).strip()
     if not content:
-        messagebox.showwarning("Trống", "Chưa có domain để lưu"); return
+        messagebox.showwarning(T('msg_empty'), T('msg_no_domain_save')); return
     with open(_DOMAINS_FILE, "w", encoding="utf-8") as f:
         f.write(content + "\n")
-    messagebox.showinfo("Đã lưu", f"Lưu vào {_DOMAINS_FILE} thành công")
+    messagebox.showinfo(T('msg_saved'), T('msg_save_ok').format(path=_DOMAINS_FILE))
 
 def on_copy_gen():
     root.clipboard_clear()
@@ -571,7 +726,7 @@ def on_save_and_switch():
     nb.select(tab_check)
 
 # --- NAME ---
-fn = _lf(tab_gen, "Tên domain  (nhập tay mỗi dòng 1 tên, hoặc để trống → random theo quốc gia / chủ đề)")
+fn = _lf(tab_gen, T('gen_name_label')); _reg(fn, 'gen_name_label')
 fn.pack(fill=tk.X, padx=10, pady=(10, 4))
 
 g_name_text = scrolledtext.ScrolledText(fn, height=3, font=("Segoe UI", 10),
@@ -580,27 +735,27 @@ g_name_text = scrolledtext.ScrolledText(fn, height=3, font=("Segoe UI", 10),
 g_name_text.pack(fill=tk.X)
 
 rrow = tk.Frame(fn, bg=BG2); rrow.pack(fill=tk.X, pady=(5,0))
-_lbl(rrow, "Số tên random:").pack(side=tk.LEFT)
+w = _lbl(rrow, T('gen_rand_count')); _reg(w, 'gen_rand_count'); w.pack(side=tk.LEFT)
 g_rand_count = tk.StringVar(value="30")
 _entry(rrow, g_rand_count).pack(side=tk.LEFT, padx=4)
 
 nrow = tk.Frame(fn, bg=BG2); nrow.pack(fill=tk.X, pady=(4,0))
 g_num_enable = tk.BooleanVar(value=False)
-_chk(nrow, "Thêm số sau tên  (vd: viet2347)", g_num_enable, bold=True).pack(side=tk.LEFT)
-_lbl(nrow, "  Từ:").pack(side=tk.LEFT)
+w = _chk(nrow, T('gen_num_suffix'), g_num_enable, bold=True); _reg(w, 'gen_num_suffix'); w.pack(side=tk.LEFT)
+w = _lbl(nrow, T('gen_from')); _reg(w, 'gen_from'); w.pack(side=tk.LEFT)
 g_num_from = tk.StringVar(value="0")
 _entry(nrow, g_num_from).pack(side=tk.LEFT, padx=2)
-_lbl(nrow, "đến:").pack(side=tk.LEFT)
+w = _lbl(nrow, T('gen_to')); _reg(w, 'gen_to'); w.pack(side=tk.LEFT)
 g_num_to = tk.StringVar(value="999")
 _entry(nrow, g_num_to).pack(side=tk.LEFT, padx=2)
-_lbl(nrow, "(tối đa 500 nếu range lớn)", small=True, fg=FG2).pack(side=tk.LEFT, padx=6)
+w = _lbl(nrow, T('gen_num_note'), small=True, fg=FG2); _reg(w, 'gen_num_note'); w.pack(side=tk.LEFT, padx=6)
 
 # --- COUNTRY + TOPIC side by side ---
 mid = tk.Frame(tab_gen, bg=BG)
 mid.pack(fill=tk.X, padx=10, pady=4)
 
 # Country (left)
-fc = _lf(mid, "Quốc gia")
+fc = _lf(mid, T('gen_country')); _reg(fc, 'gen_country')
 fc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,4))
 
 g_country_vars = {}
@@ -611,7 +766,8 @@ def toggle_all_country():
     v = g_all_country.get()
     for var in g_country_vars.values(): var.set(v)
 
-_chk(cbc, "Tất cả", g_all_country, bold=True, cmd=toggle_all_country).grid(row=0, column=0, sticky="w", padx=4)
+w = _chk(cbc, T('gen_all'), g_all_country, bold=True, cmd=toggle_all_country); _reg(w, 'gen_all')
+w.grid(row=0, column=0, sticky="w", padx=4)
 CC = 3
 for i, country in enumerate(NAMES_BY_COUNTRY.keys()):
     var = tk.BooleanVar(value=False)
@@ -619,7 +775,7 @@ for i, country in enumerate(NAMES_BY_COUNTRY.keys()):
     _chk(cbc, country, var).grid(row=(i//CC)+1, column=i%CC, sticky="w", padx=4, pady=1)
 
 # Topic (right)
-ft = _lf(mid, "Chủ đề công nghệ  (có thể kết hợp nhiều chủ đề)")
+ft = _lf(mid, T('gen_topic')); _reg(ft, 'gen_topic')
 ft.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4,0))
 
 g_topic_vars = {}
@@ -630,7 +786,8 @@ def toggle_all_topic():
     v = g_all_topic.get()
     for var in g_topic_vars.values(): var.set(v)
 
-_chk(cbt, "Tất cả", g_all_topic, bold=True, cmd=toggle_all_topic).grid(row=0, column=0, sticky="w", padx=4)
+w = _chk(cbt, T('gen_all'), g_all_topic, bold=True, cmd=toggle_all_topic); _reg(w, 'gen_all')
+w.grid(row=0, column=0, sticky="w", padx=4)
 TC = 3
 for i, topic in enumerate(TOPICS.keys()):
     var = tk.BooleanVar(value=False)
@@ -638,11 +795,11 @@ for i, topic in enumerate(TOPICS.keys()):
     _chk(cbt, topic, var).grid(row=(i//TC)+1, column=i%TC, sticky="w", padx=4, pady=1)
 
 # --- TLD ---
-ftld = _lf(tab_gen, "TLD / Đuôi domain")
+ftld = _lf(tab_gen, T('gen_tld_label')); _reg(ftld, 'gen_tld_label')
 ftld.pack(fill=tk.X, padx=10, pady=4)
 
 trow = tk.Frame(ftld, bg=BG2); trow.pack(fill=tk.X, pady=(0,6))
-_lbl(trow, "Nhập TLD (ưu tiên, vd: .com .net .vn):").pack(side=tk.LEFT)
+w = _lbl(trow, T('gen_tld_entry')); _reg(w, 'gen_tld_entry'); w.pack(side=tk.LEFT)
 g_tld_entry = tk.StringVar()
 tk.Entry(trow, textvariable=g_tld_entry, width=36, font=("Segoe UI", 10),
          bg=ENTRY_BG, fg=FG, relief=tk.FLAT,
@@ -656,7 +813,8 @@ def toggle_all_tld():
     v = g_all_tld.get()
     for var in g_tld_vars.values(): var.set(v)
 
-_chk(cbf, "Tất cả", g_all_tld, bold=True, cmd=toggle_all_tld).grid(row=0, column=0, sticky="w", padx=4)
+w = _chk(cbf, T('gen_all'), g_all_tld, bold=True, cmd=toggle_all_tld); _reg(w, 'gen_all')
+w.grid(row=0, column=0, sticky="w", padx=4)
 TCOLS = 6
 for i, tld in enumerate(TLD_OPTIONS):
     var = tk.BooleanVar(value=False)
@@ -667,20 +825,44 @@ for i, tld in enumerate(TLD_OPTIONS):
 fbtn = tk.Frame(tab_gen, bg=BG, padx=10, pady=6)
 fbtn.pack(fill=tk.X)
 
-_btn(fbtn, "Tạo Domain",              on_generate,      "#3a8fc9").pack(side=tk.LEFT, padx=(0,6))
-_btn(fbtn, "Lưu domains.txt",         on_save_gen,      "#3aab7a").pack(side=tk.LEFT, padx=(0,6))
-_btn(fbtn, "Lưu & Chuyển sang Check", on_save_and_switch, "#5a7abf").pack(side=tk.LEFT, padx=(0,6))
-_btn(fbtn, "Copy",                    on_copy_gen,      "#7a9fb5").pack(side=tk.LEFT)
+w = _btn(fbtn, T('btn_generate'), on_generate, "#3a8fc9"); _reg(w, 'btn_generate')
+w.pack(side=tk.LEFT, padx=(0,6))
+w = _btn(fbtn, T('btn_save_domains'), on_save_gen, "#3aab7a"); _reg(w, 'btn_save_domains')
+w.pack(side=tk.LEFT, padx=(0,6))
+w = _btn(fbtn, T('btn_save_switch'), on_save_and_switch, "#5a7abf"); _reg(w, 'btn_save_switch')
+w.pack(side=tk.LEFT, padx=(0,6))
+w = _btn(fbtn, T('btn_copy'), on_copy_gen, "#7a9fb5"); _reg(w, 'btn_copy')
+w.pack(side=tk.LEFT)
 g_count_lbl = tk.Label(fbtn, text="", font=("Segoe UI", 10), bg=BG, fg=FG2)
 g_count_lbl.pack(side=tk.RIGHT)
 
 # --- Output ---
-tk.Label(tab_gen, text="Kết quả:", font=("Segoe UI", 10, "bold"),
-         bg=BG, fg=FG, anchor="w", padx=10).pack(fill=tk.X)
+_gen_result_lbl = tk.Label(tab_gen, text=T('gen_result'), font=("Segoe UI", 10, "bold"),
+                           bg=BG, fg=FG, anchor="w", padx=10)
+_gen_result_lbl.pack(fill=tk.X); _reg(_gen_result_lbl, 'gen_result')
 g_output = scrolledtext.ScrolledText(tab_gen, font=("Consolas", 10), wrap=tk.NONE,
                                       state=tk.DISABLED, bg=ENTRY_BG, fg=FG, relief=tk.FLAT,
                                       highlightthickness=1, highlightbackground=BORDER)
 g_output.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+# ============================================================
+# I18N CALLBACKS — update dynamic elements on language change
+# ============================================================
+def _on_lang_refresh():
+    """Called when language changes — update tabs, columns, menus, stats."""
+    nb.tab(tab_check, text=T('tab_check'))
+    nb.tab(tab_gen, text=T('tab_gen'))
+    _update_col_headings()
+    _rebuild_ctx_menu()
+    _rebuild_avail_ctx()
+    _refresh_stats()
+
+_i18n_callbacks.append(_on_lang_refresh)
+
+# ==================== MAIN ====================
+# Reorder tabs: Generator first, Checker second
+nb.insert(0, tab_gen)
+nb.select(tab_gen)
 
 if __name__ == "__main__":
     root.mainloop()
